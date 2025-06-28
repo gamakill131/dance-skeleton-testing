@@ -1,0 +1,4 @@
+react-application/node_modules/**
+server-application/node_modules/**
+server-application/uploads/**
+react-application/build/**
