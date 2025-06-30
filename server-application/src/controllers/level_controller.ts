@@ -81,7 +81,7 @@ router.post('/create', upload.single('video'), async (req, res) => {
       ctx.drawImage(image, 0, 0);
       const estPoses = await detector!.estimatePoses(canvas as any, { flipHorizontal: false });
       poses.push({
-        timestamp: i / fps,
+        timestamp: (i * 1000) / fps,
         poses: estPoses
       });
 
@@ -130,12 +130,14 @@ router.post('/create', upload.single('video'), async (req, res) => {
       }
 
       // Save the original video
-      const originalStream = Readable.from(req.file.buffer);
+      const originalStream = fs.createReadStream(inputPath);
       originalStream.pipe(bucket.openUploadStream("ORIGINAL_"+doc._id.toString()));
 
       // Save the video annotated with the skeleton
       const skeletonStream = fs.createReadStream(outputVideoPath);
       skeletonStream.pipe(bucket.openUploadStream("ANNOTATED_"+doc._id.toString()));
+
+      // Send the Object ID of the new Level object
       res.send(doc._id.toString());
     });
   } catch (err) {

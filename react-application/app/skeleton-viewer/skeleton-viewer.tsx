@@ -3,31 +3,30 @@ import type { Route } from "react-router";
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import '@tensorflow/tfjs-backend-webgl';
 import { createSkeletonVideoTransformer, drawResults } from "./utils"
+import type { TimestampedPoses } from "~/api/endpoints";
 
-export interface TimestampedPoses {
-  poses: poseDetection.Pose[],
-  timestamp: number,
-}
+
 
 interface SkeletonViewerProps {
   reportPoses: (pose: TimestampedPoses) => void,
   useWebcam: boolean,
-  mediaStream: MediaStream | null
+  mediaStream: MediaStream | null,
+  width?: number,
+  height?: number
 }
 
 export default function SkeletonViewer({
   reportPoses,
   useWebcam,
-  mediaStream
+  mediaStream,
+  width = 800,
+  height = 800
 }: SkeletonViewerProps) {
 	  // useRef to get a reference to the video element
   const videoRef = useRef<HTMLVideoElement>(null);
   // useState to store and display any error messages
   const [error, setError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  const width = 800;
-  const height = 800;
 
   // This handles streaming webcam to video element and skeleton processing
   useEffect(() => {
@@ -55,7 +54,6 @@ export default function SkeletonViewer({
           }
           stream = mediaStream;
         }
-        console.log("Stream Created");
 
         // Create the processing pipeline
         const videoTrack = stream.getVideoTracks()[0];
@@ -66,11 +64,9 @@ export default function SkeletonViewer({
         trackProcessor.readable.pipeThrough(transformer).pipeTo(trackGenerator.writable);
         
         const processedStream = new MediaStream([trackGenerator]);
-        console.log("Processed Stream Created")
         if (videoRef.current) {
             videoRef.current.srcObject = processedStream;
             videoRef.current.play();
-            console.log("Processed Stream Set On Video Element")
         }
 
       } catch (err) {
@@ -80,7 +76,6 @@ export default function SkeletonViewer({
     };
 
     // Call the async function
-    console.log("useEffect running")
     if(videoRef.current && videoRef.current.srcObject) {
       // Don't allow changing the media stream once it has already been set once
       console.log("Media Stream already present")

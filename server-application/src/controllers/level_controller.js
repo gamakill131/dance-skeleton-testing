@@ -10,7 +10,6 @@ import * as tf from '@tensorflow/tfjs-node';
 import validateSchema, { validateID } from '../frontend_models/validate_schema.js';
 import Level from '../db_models/level_model.js';
 import mongoose from 'mongoose';
-import { Readable } from 'stream';
 const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
 const SCORE_THRESHOLD = 0.3;
@@ -60,7 +59,7 @@ router.post('/create', upload.single('video'), async (req, res) => {
             ctx.drawImage(image, 0, 0);
             const estPoses = await detector.estimatePoses(canvas, { flipHorizontal: false });
             poses.push({
-                timestamp: i / fps,
+                timestamp: (i * 1000) / fps,
                 poses: estPoses
             });
             drawResults(estPoses, ctx, MODEL);
@@ -97,11 +96,12 @@ router.post('/create', upload.single('video'), async (req, res) => {
                 return;
             }
             // Save the original video
-            const originalStream = Readable.from(req.file.buffer);
+            const originalStream = fs.createReadStream(inputPath);
             originalStream.pipe(bucket.openUploadStream("ORIGINAL_" + doc._id.toString()));
             // Save the video annotated with the skeleton
             const skeletonStream = fs.createReadStream(outputVideoPath);
             skeletonStream.pipe(bucket.openUploadStream("ANNOTATED_" + doc._id.toString()));
+            // Send the Object ID of the new Level object
             res.send(doc._id.toString());
         });
     }

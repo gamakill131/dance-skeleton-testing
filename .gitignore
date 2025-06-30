@@ -2,3 +2,5 @@ react-application/node_modules/**
 server-application/node_modules/**
 server-application/uploads/**
 react-application/build/**
+react-application/.env
+server-application/.env

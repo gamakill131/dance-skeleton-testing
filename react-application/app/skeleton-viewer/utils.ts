@@ -1,6 +1,11 @@
 import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import type { TimestampedPoses } from './skeleton-viewer';
+import type { LevelData } from '~/api/endpoints';
+import type { Keypoint } from '@tensorflow-models/pose-detection';
+
+
+
 
 // Model and Detector Variables
 const SCORE_THRESHOLD = 0.3
@@ -17,7 +22,6 @@ tf.ready().then(() => {
 
 // Stream Transformer that adds skeleton onto the video stream and stores the poses with a function passed in by the caller
 export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses) => any): TransformStream {
-    console.log("Transforming")
     return new TransformStream({
         async transform(videoFrame: VideoFrame, controller) {
             // If the detector isn't ready for some reason, skip
@@ -40,7 +44,7 @@ export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses
             const poses = await detector.estimatePoses(offscreenCanvas as unknown as HTMLCanvasElement, { flipHorizontal: false });
             setPoses({
                 poses: poses,
-                timestamp: videoFrame.timestamp
+                timestamp: videoFrame.timestamp/1000
             });
             if (poses.length > 0 && model != null) {
                 drawResults(poses, ctx, model);
@@ -52,7 +56,6 @@ export function createSkeletonVideoTransformer(setPoses: (pose: TimestampedPoses
                 alpha: 'discard'
             });
             controller.enqueue(newFrame);
-            console.log("Video Frame Queued");
           }
     });
 }
@@ -100,4 +103,213 @@ function drawSkeleton(keypoints: poseDetection.Keypoint[], ctx: OffscreenCanvasR
             ctx.stroke();
         }
     }
+}
+
+// Scoring Class
+/**
+ * Class that handles all the scoring logic for a dance session.
+ * 
+ * @param levelData - The level data to score
+ * @param window_size - The size of the window to score
+ * @param intervals - The intervals to score
+ */
+export class SessionScorer {
+    private levelData: LevelData;
+    private lastScoredTimestamp: number;
+    private window_size: number;
+    private timestamp_scores: [number, number][];
+    private current_window_average: number;
+    private intervals: [number, number][];
+
+    constructor(levelData: LevelData, window_size: number = 5000, intervals: [number, number][] = []) {
+        this.levelData = levelData;
+        this.lastScoredTimestamp = 0;
+        this.window_size = window_size;
+        this.current_window_average = 0;
+        this.intervals = intervals;
+        this.timestamp_scores = [];
+    }
+
+    /**
+     * Compares two poses and returns the root mean square distance between them after translation/scaling normalization
+     * @param pose1 - The first pose to compare
+     * @param pose2 - The second pose to compare
+     * @returns The root mean square distance between the two poses
+     */
+    static comparePoses2D(pose1: poseDetection.Pose, pose2: poseDetection.Pose) {
+        // Apply Procrusted Analysis (but only normalize with translation and scaling, not rotation)
+
+        let centroid1: number[] = [0, 0];
+        let centroid2: number[] = [0, 0];
+
+        // Calculate the centroid of each pose
+        for (const keypoint of pose1.keypoints) {
+            centroid1[0] += keypoint.x;
+            centroid1[1] += keypoint.y;
+        }
+        centroid1[0] /= pose1.keypoints.length;
+        centroid1[1] /= pose1.keypoints.length;
+
+        for (const keypoint of pose2.keypoints) {
+            centroid2[0] += keypoint.x;
+            centroid2[1] += keypoint.y;
+        }
+        centroid2[0] /= pose2.keypoints.length;
+        centroid2[1] /= pose2.keypoints.length;
+
+        // Subtract the centroids from each keypoint to get the relative positions
+        const relative1: Keypoint[] = pose1.keypoints.map(kp => ({
+            x: kp.x - centroid1[0],
+            y: kp.y - centroid1[1],
+            name: kp.name,
+        }));
+
+        const relative2: Keypoint[] = pose2.keypoints.map(kp => ({
+            x: kp.x - centroid2[0],
+            y: kp.y - centroid2[1],
+            name: kp.name,
+        }));
+        
+        // Next, compute the root mean square distance of each pose
+        const rmsd1 = Math.sqrt(relative1.reduce((sum, kp) => sum + kp.x * kp.x + kp.y * kp.y, 0) / relative1.length);
+        const rmsd2 = Math.sqrt(relative2.reduce((sum, kp) => sum + kp.x * kp.x + kp.y * kp.y, 0) / relative2.length);
+
+        // Scale the keypoints by these scales
+        const final1 = relative1.map(kp => ({
+            x: kp.x / rmsd1,
+            y: kp.y / rmsd1,
+            name: kp.name,
+        }));
+
+        const final2 = relative2.map(kp => ({
+            x: kp.x / rmsd2,
+            y: kp.y / rmsd2,
+            name: kp.name,
+        }));
+
+        // Get the root square difference between the two poses
+        let sum = 0;
+        for(const kp1 of final1) {
+            for(const kp2 of final2) {
+                if(kp1.name == kp2.name) {
+                    sum += (kp1.x - kp2.x) ** 2 + (kp1.y - kp2.y) ** 2;
+                }
+            }
+        }
+        return Math.sqrt(sum);
+    }
+
+    /**
+     * Takes in the next user pose and update the scorer
+     * @param poses - The next user pose to score
+     * @returns The current window average score
+     */
+    consumePose(poses: TimestampedPoses) {
+        // Find the pose in the level data that is closest to the pose in terms of timestamp
+        if(this.levelData.pose_data.length == 0) {
+            console.log("No level data");
+            return this.current_window_average;
+        }
+
+        // Binary search to find the closest pose since pose_data is sorted by timestamp
+        let left = 0;
+        let right = this.levelData.pose_data.length - 1;
+        let closestPose: TimestampedPoses = this.levelData.pose_data[0];
+        
+        while (left <= right) {
+            const mid = Math.floor((left + right) / 2);
+            const midPose = this.levelData.pose_data[mid];
+            
+            if (Math.abs(midPose.timestamp - poses.timestamp) < Math.abs(closestPose.timestamp - poses.timestamp)) {
+                closestPose = midPose;
+            }
+            
+            if (midPose.timestamp < poses.timestamp) {
+                left = mid + 1;
+            } else if (midPose.timestamp > poses.timestamp) {
+                right = mid - 1;
+            } else {
+                // Exact match found
+                closestPose = midPose;
+                break;
+            }
+        }
+
+        if(closestPose == null) {
+            return this.current_window_average;
+        }
+
+        // Don't score poses that happened before a pose that was already scored
+        if(closestPose.timestamp <= this.lastScoredTimestamp) {
+            return this.current_window_average;
+        }
+
+        // Score the pose
+        const score = SessionScorer.comparePoses2D(poses.poses[0], closestPose.poses[0]);
+        this.timestamp_scores.push([closestPose.timestamp, score]);
+        this.lastScoredTimestamp = closestPose.timestamp;
+
+        // Update the window average (should be the average of all the scored poses from the last scored timestamp to window_size milliseconds in the past)
+        const window_start = closestPose.timestamp - this.window_size;
+        const window_end = closestPose.timestamp;
+        
+        // Filter timestamp_scores to get scores within the window
+        // Binary search to find the start index of the window
+        left = 0;
+        right = this.timestamp_scores.length - 1;
+        let startIndex = 0;
+        
+        while (left <= right) {
+            const mid = Math.floor((left + right) / 2);
+            if (this.timestamp_scores[mid][0] >= window_start) {
+                startIndex = mid;
+                right = mid - 1;
+            } else {
+                left = mid + 1;
+            }
+        }
+        
+        // Binary search to find the end index of the window
+        left = startIndex;
+        right = this.timestamp_scores.length - 1;
+        let endIndex = startIndex;
+        
+        while (left <= right) {
+            const mid = Math.floor((left + right) / 2);
+            if (this.timestamp_scores[mid][0] <= window_end) {
+                endIndex = mid;
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+        
+        const window_scores = this.timestamp_scores.slice(startIndex, endIndex + 1);
+        
+        // Calculate window average from the filtered scores
+        const window_average = window_scores.length > 0 
+            ? window_scores.reduce((sum, [_, score]) => sum + score, 0) / window_scores.length
+            : 0;
+        this.current_window_average = window_average;
+        return window_average;
+    }
+
+    /**
+     * Computes the scores for each interval (usually 8 counts or something like that)
+     * @returns An array of scores for each interval
+     */
+    computeIntervalScores() {
+        let interval_scores: number[] = [];
+        for(const interval of this.intervals) {
+            const start = interval[0];
+            const end = interval[1];
+            const window_scores = this.timestamp_scores.filter(([timestamp, _]) => timestamp >= start && timestamp <= end);
+            const window_average = window_scores.length > 0 
+                ? window_scores.reduce((sum, [_, score]) => sum + score, 0) / window_scores.length
+                : 0;
+            interval_scores.push(window_average);
+        }
+        return interval_scores;
+    }
+        
 }
