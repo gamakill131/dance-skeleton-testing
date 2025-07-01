@@ -10,7 +10,12 @@ export interface LevelData {
 export interface TimestampedPoses {
     poses: poseDetection.Pose[],
     timestamp: number,
-  }
+}
+
+export interface LevelCreationData {
+    title: string,
+    intervals: number[][],
+}
 
 class Endpoints {
     getLevel = (objectId: string): Promise<LevelData> => {
@@ -48,6 +53,31 @@ class Endpoints {
                 console.error("Error fetching annotated video:", error);
                 throw error;
             });
+    }
+
+
+    createLevel = (video: File, data: LevelCreationData): Promise<string> => {
+        const formData = new FormData();
+        formData.append("video", video);
+        formData.append("data", JSON.stringify(data));
+
+        return fetch(`${BackendURL}/levels/create`, {
+            method: "POST",
+            body: formData,
+        })
+        .then(async response => {
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Network response was not ok: ${errorText}`);
+            }
+            
+            const text = await response.text();
+            return text;
+        })
+        .catch(error => {
+            console.error("Error creating level:", error);
+            throw error;
+        });
     }
 }
 
